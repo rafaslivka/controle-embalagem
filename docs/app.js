@@ -16,20 +16,55 @@ function handle(el,event,fn){el.addEventListener(event,async e=>{e.preventDefaul
 function openDialog(html){$('dialogBody').innerHTML=html;if(!$('modal').open)$('modal').showModal()}
 function navigate(name){active=name;galleryToken++;document.querySelector('nav').innerHTML=tabs.map(t=>'<button class="'+(t===name?'active':'')+'">'+t+'</button>').join('');document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>navigate(b.textContent));[consult,dashboard,panel,inventory,orders,catalog][tabs.indexOf(name)]()}
 function consult(){
- $('main').innerHTML=heading('Consulta SKU','Consulte a embalagem e as instruções de montagem no posto de trabalho.')+'<section class="scan"><form id="scanForm" class="row"><label>Consultar por<select id="kind"><option value="sku">Produto · SKU ou EAN</option><option value="ref">Caixa · referência ou CONSCOD</option></select></label><label style="flex:3">Código<input id="scan" autocomplete="off" placeholder="Bipe ou digite o código" autofocus></label><button>Consultar</button></form><label class="voice"><input type="checkbox" id="voice"> Ler indicação em voz alta</label></section><div id="result" aria-live="polite"></div>';
+ $('main').innerHTML=heading('Consulta SKU','Consulte a embalagem e as instruções de montagem no posto de trabalho.')+'<section class="scan"><form id="scanForm" class="row"><label>Consultar por<select id="kind"><option value="sku">Produto · SKU, série ou EAN</option><option value="ref">Caixa · referência ou CONSCOD</option></select></label><label style="flex:3">Código<input id="scan" autocomplete="off" placeholder="Bipe ou digite o código" autofocus></label><button>Consultar</button></form><label class="voice"><input type="checkbox" id="voice"> Ler indicação em voz alta</label></section><div id="result" aria-live="polite"></div>';
  $('voice').checked=voiceOn;$('voice').disabled=!('speechSynthesis' in window);$('voice').onchange=()=>voiceOn=$('voice').checked;
  $('kind').value=lookupMode;$('kind').onchange=()=>{lookupMode=$('kind').value;last='';consult()};handle($('scanForm'),'submit',()=>{last=$('scan').value.trim();showResult();if(voiceOn){speechSynthesis.cancel();const result=$('result').querySelector('h2');if(result){const speech=new SpeechSynthesisUtterance([$('result').querySelector('.pill')?.textContent,result.textContent].filter(Boolean).join('. '));speech.lang='pt-BR';speechSynthesis.speak(speech)}}$('scan').select()});$('scan').value=last;showResult();$('scan').focus();$('scan').select()
 }
 function showResult(){
  galleryToken++;const res=$('result');if(!last){res.innerHTML='<div class="empty">Aguardando leitura do '+(lookupMode==='sku'?'produto':'código da caixa')+'.</div>';return}
  if(lookupMode==='ref'){const matches=references(last,true);if(matches.length!==1){res.innerHTML='<section><h2>'+(!matches.length?'Referência não localizada':'Referência compartilhada por mais de uma caixa')+'</h2>'+matches.map((b,i)=>'<p><button class="secondary" data-idx="'+i+'">'+esc(b[0]+' · '+b[2])+'</button></p>').join('')+'</section>';res.querySelectorAll('button').forEach(b=>b.onclick=()=>renderBox({code:matches[b.dataset.idx][0],box:matches[b.dataset.idx]}));return}renderBox({code:matches[0][0],box:matches[0]});return}
- const p=findProduct(last);if(!p.sku){res.innerHTML='<section><h2>Produto não localizado</h2><p>'+esc(last)+' · Se esta etiqueta contém um EAN, associe o código ao SKU em Cadastros → Códigos de barras.</p></section>';return}renderBox(p)
+ const p=findProduct(last);if(!p.sku){associateScan(last);return}renderBox(p)
+}
+function associateScan(scanned){
+ const result=$('result');
+ result.innerHTML='<section><h2>Série ou etiqueta sem vínculo</h2><p>Código lido: '+esc(scanned)+'</p><form id="associateScan"><label>SKU do material no Sênior<input required autocomplete="off" id="materialCode"></label><button>Associar ao material</button></form></section>';
+ handle($('associateScan'),'submit',async()=>{
+   const entered=$('materialCode').value.trim();
+   const material=findProduct(entered);
+   if(!material.sku || key(material.sku)!==key(entered))throw Error('Informe um SKU cadastrado na base.');
+   await change(state=>{
+     if(state.aliases.some(row=>row[0]===scanned))throw Error('Etiqueta já associada. Atualize a consulta.');
+     state.aliases.push([scanned,String(material.sku)]);
+   });
+   if(last===scanned&&active===tabs[0])showResult();
+   notify('Etiqueta associada ao SKU '+material.sku+'.');
+ });
+}
+function offerBox(product){
+ const target=$('result').querySelector('.cols');
+ const panel=document.createElement('section');
+ const choices=db.boxes.map(box=>option(box[0],box[0]+' · '+box[2])).join('');
+ panel.innerHTML='<h2>Adicionar manual da caixa</h2><p>Selecione a embalagem aprovada para este material. Depois de salvar, envie a foto ou o PDF.</p><form id="bindBox"><label>Embalagem<select required id="boxChoice"><option value="">Escolha a caixa</option>'+choices+'</select></label><button>Salvar caixa para este SKU</button></form>';
+ target.append(panel);
+ handle($('bindBox'),'submit',async()=>{
+   const box=db.boxes.find(row=>row[0]===$('boxChoice').value);
+   if(!box)throw Error('Selecione uma caixa cadastrada.');
+   const sku=String(product.sku);
+   await change(state=>{
+     const index=state.links.findIndex(row=>key(row[0])===key(sku));
+     const row=[sku,product.mat?.[1]||'',box[0],'Validado na Consulta SKU','CONFIRMADO'];
+     if(index<0)state.links.push(row);else state.links[index]=row;
+   });
+   if(panel.isConnected)showResult();
+   notify('Caixa salva. Agora você pode enviar o manual.');
+ });
 }
 function renderBox(p){
  const {box,manual,mat,kit,code}=p;
  const title=p.suggested?'Sugestão por dimensão':p.sku?'Embalagem indicada':'Embalagem consultada';
  const fields=manual?[['Caixa ITL',manual[1]],['Reforço',manual[3]],['Calço',manual[4]],['Kit',manual[5]],['Movimentação',manual[6]],['Fonte',manual[7]]]:[];
- $('result').innerHTML='<div class="cols"><section><span class="pill '+(p.suggested?'warn':'')+'">'+esc(title)+'</span><h2 style="margin-top:12px">'+esc(code||'Sem caixa definida')+'</h2><p>'+esc(box?.[2]||manual?.[1]||'Cadastre um vínculo validado para este produto.')+'</p>'+(p.sku?'<p><b>SKU '+esc(p.sku)+'</b> · '+esc(mat?.[1]||p.link?.[1]||'')+'</p>':'')+(p.suggested?'<p class="empty">Valide o encaixe, a proteção e a orientação antes de usar. A sugestão considera somente dimensões.</p>':'')+(p.link?'<p>'+esc([p.link[3],p.link[4]].filter(Boolean).join(' · '))+'</p>':'')+(box?'<p>Referência '+esc(box[1])+' · '+esc(box.slice(3,6).join(' × '))+' mm</p>'+boxStats(box):'')+(manual?'<h3>Instrução do compressor</h3><dl>'+fields.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl>'+(kit?'<h3>Composição do kit</h3><p>'+esc(kit.slice(1).filter(Boolean).join(' · '))+'</p>':'<p class="empty">Composição do kit pendente de validação no manual.</p>'):'')+'</section>'+(code?'<section><h2>Fotos e manual de montagem</h2><p>Arquivos da embalagem '+esc(code)+'.</p><div class="gallery" id="gallery"></div><form id="upload"><label>Adicionar foto ou manual<input required id="attachment" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label><p class="muted">JPG, PNG, WebP ou PDF · até 3 MB por arquivo</p><button>Enviar arquivo</button></form></section>':'')+'</div>';
+ $('result').innerHTML='<div class="cols"><section><span class="pill '+(p.suggested?'warn':'')+'">'+esc(title)+'</span><h2 style="margin-top:12px">'+esc(code||'Sem caixa definida')+'</h2><p>'+esc(box?.[2]||manual?.[1]||'Cadastre um vínculo validado para este produto.')+'</p>'+(p.sku?'<p><b>SKU '+esc(p.sku)+'</b> · '+esc(mat?.[1]||p.link?.[1]||'')+'</p>':'')+(p.suggested?'<p class="empty">Valide o encaixe, a proteção e a orientação antes de usar. A sugestão considera somente dimensões.</p>':'')+(p.link?'<p>'+esc([p.link[3],p.link[4]].filter(Boolean).join(' · '))+'</p>':'')+(box?'<p>Referência '+esc(box[1])+' · '+esc(box.slice(3,6).join(' × '))+' mm</p>'+boxStats(box):'')+(manual?'<h3>Instrução do compressor</h3><dl>'+fields.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl>'+(kit?'<h3>Composição do kit</h3><p>'+esc(kit.slice(1).filter(Boolean).join(' · '))+'</p>':'<p class="empty">Composição do kit pendente de validação no manual.</p>'):'')+'</section>'+(code&&!p.suggested?'<section><h2>Fotos e manual de montagem</h2><p>Arquivos da embalagem '+esc(code)+'.</p><div class="gallery" id="gallery"></div><form id="upload"><label>Adicionar foto ou manual<input required id="attachment" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label><p class="muted">JPG, PNG, WebP ou PDF · até 3 MB por arquivo</p><button>Enviar arquivo</button></form></section>':'')+'</div>';
+ if(p.sku&&(!code||p.suggested)){offerBox(p);return}
  if(code){loadGallery(code).catch(e=>notify(e.message));handle($('upload'),'submit',async e=>{const btn=e.target.querySelector('button');btn.disabled=true;try{await attach(code,$('attachment').files[0]);if(btn.isConnected){$('attachment').value='';await loadGallery(code)}notify('Arquivo salvo.')}finally{btn.disabled=false}})}
 }
 function boxStats(b){const p=projection(b);return stats([['Saldo físico',p.physical],['Em trânsito',p.transit],['Projetado',p.projected],['Média semanal',p.avg],['Mínimo',p.min],['Cobertura (sem.)',p.coverage]])+'<span class="pill">'+esc(p.status)+'</span>'}
