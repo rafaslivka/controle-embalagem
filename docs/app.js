@@ -23,11 +23,15 @@ function consult(){
 function showResult(){
  galleryToken++;const res=$('result');if(!last){res.innerHTML='<div class="empty">Aguardando leitura do '+(lookupMode==='sku'?'produto':'código da caixa')+'.</div>';return}
  if(lookupMode==='ref'){const matches=references(last,true);if(matches.length!==1){res.innerHTML='<section><h2>'+(!matches.length?'Referência não localizada':'Referência compartilhada por mais de uma caixa')+'</h2>'+matches.map((b,i)=>'<p><button class="secondary" data-idx="'+i+'">'+esc(b[0]+' · '+b[2])+'</button></p>').join('')+'</section>';res.querySelectorAll('button').forEach(b=>b.onclick=()=>renderBox({code:matches[b.dataset.idx][0],box:matches[b.dataset.idx]}));return}renderBox({code:matches[0][0],box:matches[0]});return}
+ const saved=(db.serialBoxes||[]).find(row=>row[0]===last);
+ if(saved){renderBox({serial:last,code:saved[1],box:db.boxes.find(b=>b[0]===saved[1])});return}
  const p=findProduct(last);if(!p.sku){associateScan(last);return}renderBox(p)
 }
 function associateScan(scanned){
  const result=$('result');
  result.innerHTML='<section><h2>Série ou etiqueta sem vínculo</h2><p>Código lido: '+esc(scanned)+'</p><form id="associateScan"><label>SKU do material no Sênior<input required autocomplete="off" id="materialCode"></label><button>Associar ao material</button></form></section>';
+ result.insertAdjacentHTML('beforeend','<div class="cols"></div>');
+ offerBox({serial:scanned});
  handle($('associateScan'),'submit',async()=>{
    const entered=$('materialCode').value.trim();
    const material=findProduct(entered);
@@ -43,17 +47,32 @@ function associateScan(scanned){
 function offerBox(product){
  const target=$('result').querySelector('.cols');
  const panel=document.createElement('section');
- const choices=db.boxes.map(box=>option(box[0],box[0]+' · '+box[2])).join('');
- panel.innerHTML='<h2>Adicionar manual da caixa</h2><p>Selecione a embalagem aprovada para este material. Depois de salvar, envie a foto ou o PDF.</p><form id="bindBox"><label>Embalagem<select required id="boxChoice"><option value="">Escolha a caixa</option>'+choices+'</select></label><button>Salvar caixa para este SKU</button></form>';
+ const codes=[...new Set([...db.boxes.map(b=>b[0]),...db.links.map(r=>r[2]),...(db.serialBoxes||[]).map(r=>r[1])].filter(Boolean))];
+ const choices=codes.map(code=>{
+   const box=db.boxes.find(b=>b[0]===code);
+   return option(code,box?.[2]?code+' · '+box[2]:code);
+ }).join('');
+ const scope=product.serial?'esta série':'este SKU';
+ panel.innerHTML='<h2>Adicionar manual da caixa</h2><form id="bindBox"><label>Caixa cadastrada<select id="boxChoice"><option value="">Escolha ou digite abaixo</option>'+choices+'</select></label><label>Ou digite o nome ou código da caixa<input maxlength="100" id="boxTyped" placeholder="Ex.: Caixa reforçada 40 × 30"></label><button>Salvar caixa para '+scope+'</button></form>';
  target.append(panel);
+ const typed=$('boxTyped'),choice=$('boxChoice');
+ typed.oninput=()=>{if(typed.value.trim())choice.value=''};
+ choice.onchange=()=>{if(choice.value)typed.value=''};
  handle($('bindBox'),'submit',async()=>{
-   const box=db.boxes.find(row=>row[0]===$('boxChoice').value);
-   if(!box)throw Error('Selecione uma caixa cadastrada.');
-   const sku=String(product.sku);
+   const input=(typed.value.trim()||choice.value).replace(/\s+/g,' ');
+   if(!input)throw Error('Digite a caixa utilizada ou escolha uma da lista.');
+   const code=codes.find(existing=>fold(existing)===fold(input))||input;
    await change(state=>{
-     const index=state.links.findIndex(row=>key(row[0])===key(sku));
-     const row=[sku,product.mat?.[1]||'',box[0],'Validado na Consulta SKU','CONFIRMADO'];
-     if(index<0)state.links.push(row);else state.links[index]=row;
+     if(product.serial){
+       const rows=state.serialBoxes??=[];
+       const previous=rows.find(r=>r[0]===product.serial);
+       if(previous)previous[1]=code;else rows.push([product.serial,code]);
+     }else{
+       const sku=String(product.sku);
+       const index=state.links.findIndex(row=>key(row[0])===key(sku));
+       const row=[sku,product.mat?.[1]||'',code,'Validado na Consulta SKU','CONFIRMADO'];
+       if(index<0)state.links.push(row);else state.links[index]=row;
+     }
    });
    if(panel.isConnected)showResult();
    notify('Caixa salva. Agora você pode enviar o manual.');
@@ -61,9 +80,9 @@ function offerBox(product){
 }
 function renderBox(p){
  const {box,manual,mat,kit,code}=p;
- const title=p.suggested?'Sugestão por dimensão':p.sku?'Embalagem indicada':'Embalagem consultada';
+ const title=p.suggested?'Sugestão por dimensão':(p.sku||p.serial)?'Embalagem indicada':'Embalagem consultada';
  const fields=manual?[['Caixa ITL',manual[1]],['Reforço',manual[3]],['Calço',manual[4]],['Kit',manual[5]],['Movimentação',manual[6]],['Fonte',manual[7]]]:[];
- $('result').innerHTML='<div class="cols"><section><span class="pill '+(p.suggested?'warn':'')+'">'+esc(title)+'</span><h2 style="margin-top:12px">'+esc(code||'Sem caixa definida')+'</h2><p>'+esc(box?.[2]||manual?.[1]||'Cadastre um vínculo validado para este produto.')+'</p>'+(p.sku?'<p><b>SKU '+esc(p.sku)+'</b> · '+esc(mat?.[1]||p.link?.[1]||'')+'</p>':'')+(p.suggested?'<p class="empty">Valide o encaixe, a proteção e a orientação antes de usar. A sugestão considera somente dimensões.</p>':'')+(p.link?'<p>'+esc([p.link[3],p.link[4]].filter(Boolean).join(' · '))+'</p>':'')+(box?'<p>Referência '+esc(box[1])+' · '+esc(box.slice(3,6).join(' × '))+' mm</p>'+boxStats(box):'')+(manual?'<h3>Instrução do compressor</h3><dl>'+fields.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl>'+(kit?'<h3>Composição do kit</h3><p>'+esc(kit.slice(1).filter(Boolean).join(' · '))+'</p>':'<p class="empty">Composição do kit pendente de validação no manual.</p>'):'')+'</section>'+(code&&!p.suggested?'<section><h2>Fotos e manual de montagem</h2><p>Arquivos da embalagem '+esc(code)+'.</p><div class="gallery" id="gallery"></div><form id="upload"><label>Adicionar foto ou manual<input required id="attachment" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label><p class="muted">JPG, PNG, WebP ou PDF · até 3 MB por arquivo</p><button>Enviar arquivo</button></form></section>':'')+'</div>';
+ $('result').innerHTML='<div class="cols"><section><span class="pill '+(p.suggested?'warn':'')+'">'+esc(title)+'</span><h2 style="margin-top:12px">'+esc(code||'Sem caixa definida')+'</h2><p>'+esc(box?.[2]||manual?.[1]||(code?'Caixa cadastrada na consulta.':'Cadastre um vínculo validado para este produto.'))+'</p>'+(p.serial?'<p>Série '+esc(p.serial)+'</p>':'')+(p.sku?'<p><b>SKU '+esc(p.sku)+'</b> · '+esc(mat?.[1]||p.link?.[1]||'')+'</p>':'')+(p.suggested?'<p class="empty">Valide o encaixe, a proteção e a orientação antes de usar. A sugestão considera somente dimensões.</p>':'')+(p.link?'<p>'+esc([p.link[3],p.link[4]].filter(Boolean).join(' · '))+'</p>':'')+(box?'<p>Referência '+esc(box[1])+' · '+esc(box.slice(3,6).join(' × '))+' mm</p>'+boxStats(box):'')+(manual?'<h3>Instrução do compressor</h3><dl>'+fields.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl>'+(kit?'<h3>Composição do kit</h3><p>'+esc(kit.slice(1).filter(Boolean).join(' · '))+'</p>':'<p class="empty">Composição do kit pendente de validação no manual.</p>'):'')+'</section>'+(code&&!p.suggested?'<section><h2>Fotos e manual de montagem</h2><p>Arquivos da embalagem '+esc(code)+'.</p><div class="gallery" id="gallery"></div><form id="upload"><label>Adicionar foto ou manual<input required id="attachment" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label><p class="muted">JPG, PNG, WebP ou PDF · até 3 MB por arquivo</p><button>Enviar arquivo</button></form></section>':'')+'</div>';
  if(p.sku&&(!code||p.suggested)){offerBox(p);return}
  if(code){loadGallery(code).catch(e=>notify(e.message));handle($('upload'),'submit',async e=>{const btn=e.target.querySelector('button');btn.disabled=true;try{await attach(code,$('attachment').files[0]);if(btn.isConnected){$('attachment').value='';await loadGallery(code)}notify('Arquivo salvo.')}finally{btn.disabled=false}})}
 }
