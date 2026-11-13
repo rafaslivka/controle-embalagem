@@ -82,22 +82,120 @@ function renderBox(p){
  const {box,manual,mat,kit,code}=p;
  const title=p.suggested?'Sugestão por dimensão':(p.sku||p.serial)?'Embalagem indicada':'Embalagem consultada';
  const fields=manual?[['Caixa ITL',manual[1]],['Reforço',manual[3]],['Calço',manual[4]],['Kit',manual[5]],['Movimentação',manual[6]],['Fonte',manual[7]]]:[];
- $('result').innerHTML='<div class="cols"><section><span class="pill '+(p.suggested?'warn':'')+'">'+esc(title)+'</span><h2 style="margin-top:12px">'+esc(code||'Sem caixa definida')+'</h2><p>'+esc(box?.[2]||manual?.[1]||(code?'Caixa cadastrada na consulta.':'Cadastre um vínculo validado para este produto.'))+'</p>'+(p.serial?'<p>Série '+esc(p.serial)+'</p>':'')+(p.sku?'<p><b>SKU '+esc(p.sku)+'</b> · '+esc(mat?.[1]||p.link?.[1]||'')+'</p>':'')+(p.suggested?'<p class="empty">Valide o encaixe, a proteção e a orientação antes de usar. A sugestão considera somente dimensões.</p>':'')+(p.link?'<p>'+esc([p.link[3],p.link[4]].filter(Boolean).join(' · '))+'</p>':'')+(box?'<p>Referência '+esc(box[1])+' · '+esc(box.slice(3,6).join(' × '))+' mm</p>'+boxStats(box):'')+(manual?'<h3>Instrução do compressor</h3><dl>'+fields.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl>'+(kit?'<h3>Composição do kit</h3><p>'+esc(kit.slice(1).filter(Boolean).join(' · '))+'</p>':'<p class="empty">Composição do kit pendente de validação no manual.</p>'):'')+'</section>'+(code&&!p.suggested?'<section><h2>Fotos e manual de montagem</h2><p>Arquivos da embalagem '+esc(code)+'.</p><div class="gallery" id="gallery"></div><form id="upload"><label>Adicionar foto ou manual<input required id="attachment" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label><p class="muted">JPG, PNG, WebP ou PDF · até 3 MB por arquivo</p><button>Enviar arquivo</button></form></section>':'')+'</div>';
+ $('result').innerHTML='<div class="cols"><section><span class="pill '+(p.suggested?'warn':'')+'">'+esc(title)+'</span><h2 style="margin-top:12px">'+esc(code||'Sem caixa definida')+'</h2><p>'+esc(box?.[2]||manual?.[1]||(code?'Caixa cadastrada na consulta.':'Cadastre um vínculo validado para este produto.'))+'</p>'+(p.serial?'<p>Série '+esc(p.serial)+'</p>':'')+(p.sku?'<p><b>SKU '+esc(p.sku)+'</b> · '+esc(mat?.[1]||p.link?.[1]||'')+'</p>':'')+(p.suggested?'<p class="empty">Valide o encaixe, a proteção e a orientação antes de usar. A sugestão considera somente dimensões.</p>':'')+(p.link?'<p>'+esc([p.link[3],p.link[4]].filter(Boolean).join(' · '))+'</p>':'')+(box?'<p>Referência '+esc(box[1])+' · '+esc(box.slice(3,6).join(' × '))+' mm</p>'+boxStats(box):'')+(manual?'<h3>Instrução do compressor</h3><dl>'+fields.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl>'+(kit?'<h3>Composição do kit</h3><p>'+esc(kit.slice(1).filter(Boolean).join(' · '))+'</p>':'<p class="empty">Composição do kit pendente de validação no manual.</p>'):'')+'</section>'+(code&&!p.suggested?'<section><h2>Fotos e manual de montagem</h2><p>Arquivos da embalagem '+esc(code)+'.</p><div id="packing"></div><div class="gallery" id="gallery"></div><form id="upload"><label>Adicionar fotos das etapas ou PDF<input id="attachment" type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf"></label><p class="muted">Até 3 MB por arquivo. Selecione outras fotos para acrescentar etapas.</p><div id="draftSteps"></div><button disabled>Salvar etapas</button></form></section>':'')+'</div>';
  if(p.sku&&(!code||p.suggested)){offerBox(p);return}
- if(code){loadGallery(code).catch(e=>notify(e.message));handle($('upload'),'submit',async e=>{const btn=e.target.querySelector('button');btn.disabled=true;try{await attach(code,$('attachment').files[0]);if(btn.isConnected){$('attachment').value='';await loadGallery(code)}notify('Arquivo salvo.')}finally{btn.disabled=false}})}
+ if(code){setupPacking(code);loadGallery(code).catch(e=>notify(e.message))}
+
 }
 function boxStats(b){const p=projection(b);return stats([['Saldo físico',p.physical],['Em trânsito',p.transit],['Projetado',p.projected],['Média semanal',p.avg],['Mínimo',p.min],['Cobertura (sem.)',p.coverage]])+'<span class="pill">'+esc(p.status)+'</span>'}
 let idbPromise;function idb(){return idbPromise??=new Promise((resolve,reject)=>{const r=indexedDB.open('embalagens-anexos-v1',1);r.onupgradeneeded=()=>r.result.createObjectStore('files',{keyPath:'id'}).createIndex('codigo','codigo');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
 async function localFiles(code){const d=await idb();return new Promise((ok,no)=>{let r=d.transaction('files').objectStore('files').index('codigo').getAll(code);r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)})}
-async function attach(code,f){
+async function attach(code,f,uid){
  if(!f||!['image/jpeg','image/png','image/webp','application/pdf'].includes(f.type)||!f.size||f.size>3145728)throw Error('Selecione uma imagem ou PDF de até 3 MB.');
- const uid=crypto.randomUUID();if(online){const url=await new Promise((ok,no)=>{let r=new FileReader();r.onload=()=>ok(r.result);r.onerror=()=>no(r.error);r.readAsDataURL(f)});await api('emb_anexar',{uid,codigo:code,titulo:f.name.slice(0,200),mime:f.type,conteudo:url.split(',')[1]})}
+ if(online){const url=await new Promise((ok,no)=>{let r=new FileReader();r.onload=()=>ok(r.result);r.onerror=()=>no(r.error);r.readAsDataURL(f)});await api('emb_anexar',{uid,codigo:code,titulo:f.name.slice(0,200),mime:f.type,conteudo:url.split(',')[1]})}
  else{const d=await idb();await new Promise((ok,no)=>{const t=d.transaction('files','readwrite');t.objectStore('files').put({codigo:code,id:uid,nome:f.name,tipo:f.type,file:f});t.oncomplete=ok;t.onabort=()=>no(t.error)})}
 }
-let objectUrls=[];async function loadGallery(code){
- const token=++galleryToken;objectUrls.forEach(u=>URL.revokeObjectURL(u));objectUrls=[];const dest=$('gallery');dest.textContent='Carregando arquivos…';const files=online?await api('emb_listar',{codigo:code}):await localFiles(code);if(token!==galleryToken)return;
- dest.innerHTML=files.length?'':'<p class="empty">Nenhuma foto ou manual cadastrado para esta caixa.</p>';
- for(const f of files){let blob=f.file;if(!blob){const raw=await api('emb_arquivo',{uid:f.id});blob=new Blob([Uint8Array.from(atob(raw),v=>v.charCodeAt(0))],{type:f.tipo})}if(token!==galleryToken)return;const url=URL.createObjectURL(blob);objectUrls.push(url);const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener';a.textContent=f.nome;if(f.tipo.startsWith('image/')){const img=document.createElement('img');img.alt=f.nome;img.src=url;a.prepend(img)}dest.append(a,document.createElement('hr'))}
+function guideFor(state, code, create=false){
+ const guides=state.packingGuides || (create ? (state.packingGuides=[]) : []);
+ let guide=guides.find(item=>item.code===code);
+ if(!guide && create){guide={code,note:'',steps:[]};guides.push(guide)}
+ return guide || {code,note:'',steps:[]};
+}
+function setupPacking(code){
+ const area=$('packing'), form=$('upload'), input=$('attachment'), list=$('draftSteps'), submit=form.querySelector('button');
+ const guide=guideFor(db,code);
+ area.innerHTML='<h3>Como embalar</h3><p id="guideNote" style="white-space:pre-wrap"></p><details><summary>Editar orientação geral</summary><form><label>Orientação geral da embalagem<textarea rows="4"></textarea></label><button>Salvar orientação</button></form></details>';
+ const note=area.querySelector('textarea'),display=$('guideNote');
+ note.value=guide.note;display.textContent=guide.note||'Orientação geral ainda não cadastrada.';
+ handle(area.querySelector('form'),'submit',async()=>{
+   const value=note.value.trim();
+   await change(state=>{guideFor(state,code,true).note=value});
+   display.textContent=value||'Orientação geral ainda não cadastrada.';
+   area.querySelector('details').open=false;notify('Orientação salva.');
+ });
+ const drafts=[];
+ input.onchange=()=>{
+   for(const file of input.files){
+     if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(file.type)||!file.size||file.size>3145728){notify('Arquivo inválido ou acima de 3 MB: '+file.name);continue}
+     const item={id:crypto.randomUUID(),file,uploaded:false};
+     const block=document.createElement('fieldset');
+     block.style.minWidth='0';
+     block.innerHTML='<legend></legend><label>O que fazer nesta etapa?<textarea required rows="4" placeholder="Descreva como posicionar, fixar ou fechar a embalagem."></textarea></label><button type="button" class="secondary">Retirar da seleção</button>';
+     block.querySelector('legend').textContent=file.name;
+     if(file.type.startsWith('image/')){
+       const preview=document.createElement('img'),url=URL.createObjectURL(file);
+       preview.alt=file.name;preview.style.cssText='max-width:100%;max-height:160px';preview.onload=preview.onerror=()=>URL.revokeObjectURL(url);preview.src=url;block.prepend(preview);
+     }
+     item.block=block;item.caption=block.querySelector('textarea');
+     block.querySelector('button').onclick=()=>{drafts.splice(drafts.indexOf(item),1);block.remove();submit.disabled=!drafts.length};
+     list.append(block);drafts.push(item);
+   }
+   input.value='';submit.disabled=!drafts.length;
+ };
+ handle(form,'submit',async()=>{
+   if(submit.disabled||!drafts.length)return;
+   if(drafts.some(d=>!d.caption.value.trim()))throw Error('Descreva o que fazer em cada etapa.');
+   submit.disabled=true;input.disabled=true;drafts.forEach(d=>d.block.disabled=true);
+   try{
+     const existing=online?await api('emb_listar',{codigo:code}):await localFiles(code);
+     const pendingIds=new Set(drafts.map(d=>d.id));
+     for(const draft of drafts){
+       if(!draft.uploaded){await attach(code,draft.file,draft.id);draft.uploaded=true}
+     }
+     await change(state=>{
+       const steps=guideFor(state,code,true).steps;
+       for(const f of existing){
+         if(!pendingIds.has(f.id)&&!steps.some(s=>s.id===f.id))steps.push({id:f.id,text:''});
+       }
+       for(const draft of drafts){
+         if(!steps.some(step=>step.id===draft.id))steps.push({id:draft.id,text:draft.caption.value.trim()});
+       }
+     });
+     drafts.length=0;list.replaceChildren();notify('Etapas salvas.');
+     if(form.isConnected)await loadGallery(code);
+   }finally{submit.disabled=!drafts.length;input.disabled=false;drafts.forEach(d=>d.block.disabled=false)}
+ });
+}
+let objectUrls=[];
+async function loadGallery(code){
+ const token=++galleryToken;
+ objectUrls.forEach(u=>URL.revokeObjectURL(u));objectUrls=[];
+ const dest=$('gallery');dest.textContent='Carregando etapas…';
+ const files=online?await api('emb_listar',{codigo:code}):await localFiles(code);
+ if(token!==galleryToken)return;
+ const steps=guideFor(db,code).steps;
+ const byId=new Map(files.map(f=>[f.id,f]));
+ const ordered=steps.map(step=>byId.get(step.id)).filter(Boolean);
+ const recorded=new Set(ordered.map(f=>f.id));
+ ordered.push(...files.filter(f=>!recorded.has(f.id)));
+ dest.replaceChildren();
+ if(!ordered.length){dest.textContent='Nenhuma foto ou manual cadastrado.';return}
+ for(const [index,file] of ordered.entries()){
+   const step=steps.find(s=>s.id===file.id);
+   const card=document.createElement('article');
+   card.innerHTML='<h3>Etapa '+(index+1)+'</h3><p style="white-space:pre-wrap"></p><div class="stepMedia"></div><details><summary>Editar instrução desta etapa</summary><form><label>O que fazer nesta etapa?<textarea required rows="4"></textarea></label><button>Salvar instrução</button></form></details>';
+   card.querySelector('p').textContent=step?.text||'Instrução ainda não cadastrada.';
+   const editor=card.querySelector('textarea');editor.value=step?.text||'';
+   handle(card.querySelector('form'),'submit',async()=>{
+     const value=editor.value.trim();if(!value)throw Error('Escreva a instrução da etapa.');
+     await change(state=>{
+       const guide=guideFor(state,code,true);
+       for(const f of ordered)if(!guide.steps.some(s=>s.id===f.id))guide.steps.push({id:f.id,text:''});
+       guide.steps.find(s=>s.id===file.id).text=value;
+     });
+     card.querySelector('p').textContent=value;card.querySelector('details').open=false;notify('Instrução salva.');
+   });
+   dest.append(card);
+   try{
+     let blob=file.file;
+     if(!blob){const raw=await api('emb_arquivo',{uid:file.id});blob=new Blob([Uint8Array.from(atob(raw),c=>c.charCodeAt(0))],{type:file.tipo})}
+     if(token!==galleryToken)return;
+     const url=URL.createObjectURL(blob);objectUrls.push(url);
+     const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener';a.textContent=file.nome;
+     if(file.tipo.startsWith('image/')){const img=document.createElement('img');img.alt=step?.text||file.nome;img.src=url;a.prepend(img)}
+     card.querySelector('.stepMedia').append(a);
+   }catch{if(token!==galleryToken)return;card.querySelector('.stepMedia').textContent='Falha ao carregar '+file.nome+'. Consulte novamente.'}
+ }
 }
 const boxHeaders=['CONSCOD','Referência','Descrição','Dim. 1','Dim. 2','Dim. 3','Entrada inicial','Físico','Consumo acum.','Média/sem.','Mínimo','Cobertura','Status','Em trânsito','Projetado'];
 const boxRow=b=>{const p=projection(b);return [...b.slice(0,8),Math.max(0,num(b[6])-p.physical),p.avg,p.min,p.coverage,p.status,p.transit,p.projected]};
