@@ -156,11 +156,54 @@ function setupPacking(code){
    }finally{submit.disabled=!drafts.length;input.disabled=false;drafts.forEach(d=>d.block.disabled=false)}
  });
 }
+async function editPhoto(code,file,original){
+ openDialog('<h2>Editar foto</h2><p>Confira a imagem antes de salvar a etapa.</p><form id="photoForm"><div class="photoStage"><img id="photoPreview" alt="Prévia da foto da etapa"></div><div class="photoTools"><label>Escolher outra foto<input type="file" id="photoPick" accept="image/png,image/jpeg,image/webp"></label><button type="button" class="secondary" id="photoTurn">Girar 90°</button></div><p class="muted" id="photoMsg" role="status"></p><button id="photoSave" disabled>Salvar foto</button></form>');
+ const dialog=$('modal'), preview=$('photoPreview'), picker=$('photoPick'), save=$('photoSave'), rotate=$('photoTurn'), msg=$('photoMsg');
+ let source=original,name=file.nome,turns=0,url=URL.createObjectURL(source);
+ preview.src=url;
+ dialog.addEventListener('close',()=>URL.revokeObjectURL(url),{once:true});
+ function refresh(){preview.style.transform='rotate('+turns*90+'deg)';save.disabled=source===original&&!turns;msg.textContent=''}
+ picker.onchange=()=>{
+   const selected=picker.files[0];if(!selected)return;
+   if(!['image/jpeg','image/png','image/webp'].includes(selected.type)||!selected.size||selected.size>3145728){msg.textContent='Escolha uma foto JPG, PNG ou WebP de até 3 MB.';picker.value='';return}
+   source=selected;name=selected.name;turns=0;URL.revokeObjectURL(url);url=URL.createObjectURL(source);preview.src=url;refresh();
+ };
+ rotate.onclick=()=>{turns=(turns+1)%4;refresh()};
+ handle($('photoForm'),'submit',async()=>{
+   if(save.disabled)return;
+   save.disabled=picker.disabled=rotate.disabled=true;
+   try{
+     await preview.decode();
+     let updated=source;
+     if(turns){
+       const canvas=document.createElement('canvas'), w=preview.naturalWidth,h=preview.naturalHeight;
+       canvas.width=turns%2?h:w;canvas.height=turns%2?w:h;
+       const ctx=canvas.getContext('2d');ctx.translate(canvas.width/2,canvas.height/2);ctx.rotate(turns*Math.PI/2);ctx.drawImage(preview,-w/2,-h/2);
+       updated=await new Promise(resolve=>canvas.toBlob(resolve,source.type,0.9));
+       if(!updated||updated.size>3145728)throw Error('A foto girada excedeu o tamanho disponível. Escolha uma imagem menor.');
+     }
+     if(online){
+       const digest=await crypto.subtle.digest('SHA-256',await original.arrayBuffer());
+       const anterior=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+       const data=await new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=()=>no(r.error);r.readAsDataURL(updated)});
+       const ok=await api('emb_editar_foto',{uid:file.id,codigo:code,titulo:name.slice(0,200),mime:updated.type,conteudo:data.split(',')[1],anterior});
+       if(!ok)throw Error('A foto foi alterada em outra estação. Consulte a caixa novamente.');
+     }else{
+       const d=await idb();await new Promise((ok,no)=>{const tx=d.transaction('files','readwrite');tx.objectStore('files').put({...file,file:updated,nome:name,tipo:updated.type});tx.oncomplete=ok;tx.onabort=()=>no(tx.error)});
+     }
+     if(preview.isConnected&&dialog.open)dialog.close();
+     if(active===tabs[0]&&$('gallery')?.dataset.code===code)await loadGallery(code);
+     notify('Foto atualizada.');
+   }catch(error){msg.textContent=error.message||'Falha ao salvar a foto.'}
+   finally{save.disabled=picker.disabled=rotate.disabled=false}
+ });
+}
+
 let objectUrls=[];
 async function loadGallery(code){
  const token=++galleryToken;
  objectUrls.forEach(u=>URL.revokeObjectURL(u));objectUrls=[];
- const dest=$('gallery');dest.textContent='Carregando etapas…';
+ const dest=$('gallery');dest.dataset.code=code;dest.textContent='Carregando etapas…';
  const files=online?await api('emb_listar',{codigo:code}):await localFiles(code);
  if(token!==galleryToken)return;
  const steps=guideFor(db,code).steps;
@@ -173,7 +216,7 @@ async function loadGallery(code){
  for(const [index,file] of ordered.entries()){
    const step=steps.find(s=>s.id===file.id);
    const card=document.createElement('article');
-   card.innerHTML='<h3>Etapa '+(index+1)+'</h3><p style="white-space:pre-wrap"></p><div class="stepMedia"></div><details><summary>Editar instrução desta etapa</summary><form><label>O que fazer nesta etapa?<textarea required rows="4"></textarea></label><button>Salvar instrução</button></form></details>';
+   card.innerHTML='<h3><span class="stepIndex">'+String(index+1).padStart(2,'0')+'</span> Etapa '+(index+1)+'</h3><p style="white-space:pre-wrap"></p><div class="stepMedia"></div><details><summary>Editar instrução desta etapa</summary><form><label>O que fazer nesta etapa?<textarea required rows="4"></textarea></label><button>Salvar instrução</button></form></details>';
    card.querySelector('p').textContent=step?.text||'Instrução ainda não cadastrada.';
    const editor=card.querySelector('textarea');editor.value=step?.text||'';
    handle(card.querySelector('form'),'submit',async()=>{
@@ -194,6 +237,10 @@ async function loadGallery(code){
      const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener';a.textContent=file.nome;
      if(file.tipo.startsWith('image/')){const img=document.createElement('img');img.alt=step?.text||file.nome;img.src=url;a.prepend(img)}
      card.querySelector('.stepMedia').append(a);
+     if(file.tipo.startsWith('image/')){
+       const edit=document.createElement('button');edit.type='button';edit.className='secondary photoEdit';edit.textContent='Editar foto';
+       handle(edit,'click',()=>editPhoto(code,file,blob));card.querySelector('.stepMedia').append(edit);
+     }
    }catch{if(token!==galleryToken)return;card.querySelector('.stepMedia').textContent='Falha ao carregar '+file.nome+'. Consulte novamente.'}
  }
 }
